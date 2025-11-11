@@ -2,8 +2,9 @@ use std::{fmt::Write, path::PathBuf};
 
 use argh::from_env;
 use graysondoc::{
-	Error, GdocCli, call_pandoc, check_for_exes, compile_std_sections, compile_yaml_metadata,
-	nom_document_name, parse_toml,
+	Error, GdocCli, call_pandoc, check_for_exes, compile_memo_std_sections,
+	compile_memo_yaml_metadata, compile_std_sections, compile_yaml_metadata, nom_document_name,
+	parse_toml,
 };
 
 fn main() -> Result<(), Error> {
@@ -28,6 +29,76 @@ fn main() -> Result<(), Error> {
 	};
 
 	println!("Input file: {file_name}");
+
+	// TODO: better architecture for this
+	if let Some(authors) = gdoc.memo {
+		println!("Compiling as a memo...");
+		let est_buf_len = {
+			let md_est = input_md_path
+				.metadata()
+				.map(|m| m.len() + 1024) // 1024 for metadata
+				.unwrap_or(12 * 1024);
+			md_est as usize
+		};
+
+		let file_buf = String::with_capacity(est_buf_len);
+
+		let timestamp = chrono::Local::now();
+
+		let buf_w_yaml = compile_memo_yaml_metadata(file_buf, &file_name, &timestamp);
+		let input_md_content =
+			std::fs::read_to_string(&input_md_path).map_err(|e| Error::ReadInputMd(e))?;
+		let irmd_path: PathBuf = {
+			let mut input_clone = input_md_path.clone();
+			input_clone.set_extension("");
+			let mut s = input_clone.as_mut_os_string();
+			write!(&mut s, "-{}", gdoc.revision).unwrap();
+			input_clone.set_extension("irmd");
+			input_clone
+		};
+
+		let hash: u64 = xxhash_rust::const_xxh3::xxh3_64(input_md_content.as_bytes());
+
+		let mut buf_w_std_sections = compile_memo_std_sections(
+			buf_w_yaml,
+			gdoc.revision,
+			hash,
+			input_md_content.len(),
+			&timestamp,
+			&authors,
+		);
+
+		buf_w_std_sections.write_str(&input_md_content).unwrap();
+
+		// write irmd
+		// TODO: use OpenOptions + proper errors
+		std::fs::write(&irmd_path, buf_w_std_sections).expect("write all to irmd");
+		if gdoc.ir_only {
+			println!("Created intermediate mardown at: {:?}", &irmd_path);
+			println!("Exiting...")
+		} else {
+			let output_path: Box<std::ffi::OsStr> = {
+				let mut input_clone = irmd_path.clone();
+				input_clone.set_extension("pdf");
+				input_clone.into_os_string().into_boxed_os_str()
+			};
+
+			println!("Building document...");
+			call_pandoc(&irmd_path, &output_path)?;
+			if !gdoc.preserve_ir {
+				let _ = std::fs::remove_file(&irmd_path).inspect_err(|ioe| {
+					eprintln!(
+						"Unable to remove intermediate markdown at: {:?}\n{ioe}",
+						&irmd_path
+					)
+				});
+			} else {
+				println!("Preserving intermediate mardown at: {:?}", &irmd_path);
+			}
+			println!("Document created at: {output_path:?}")
+		}
+		return Ok(());
+	}
 
 	let (before, _after) = file_name
 		.rsplit_once(".md")

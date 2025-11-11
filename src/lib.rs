@@ -97,6 +97,9 @@ pub struct GdocCli {
 	/// stop after building markdown itermediate representation, implies --preserve-ir
 	#[argh(switch)]
 	pub ir_only: bool,
+	/// compile the document as a memo given comma separated author list
+	#[argh(option)]
+	pub memo: Option<String>,
 }
 
 #[derive(Debug)]
@@ -319,6 +322,28 @@ pub fn compile_yaml_metadata(
 	file_buf
 }
 
+pub fn compile_memo_yaml_metadata(
+	mut file_buf: String,
+	name: &str,
+	time: &DateTime<Local>,
+) -> String {
+	use std::fmt::Write as _;
+	let b = &mut file_buf;
+
+	writeln!(b, "---").unwrap();
+	writeln!(b, "title: {name}").unwrap();
+	let build_date = time.format("%Y/%m/%d UTC %z");
+	writeln!(b, "date: {build_date}").unwrap();
+	writeln!(b, "fontsize: 12pt").unwrap();
+	writeln!(b, "toc: true").unwrap();
+	writeln!(b, "mainfont: AtkinsonHyperlegibleNext").unwrap();
+	// writeln!(b, "fontfamily: AtkensonHyperlegibleNext").unwrap();
+	writeln!(b, "papersize: letter").unwrap();
+	// extra NL so we leave a blank line before the first section
+	writeln!(b, "---\n").unwrap();
+	file_buf
+}
+
 pub fn compile_std_sections(
 	mut file_buf: String,
 	metadata: &Metadata,
@@ -349,6 +374,34 @@ pub fn compile_std_sections(
 	writeln!(b, "# Authors {{-}}\n").unwrap();
 	for author in &metadata.authors {
 		writeln!(b, "* {author}").unwrap();
+	}
+	b.write_char('\n').unwrap();
+	file_buf
+}
+
+pub fn compile_memo_std_sections(
+	mut file_buf: String,
+	revision: usize,
+	hash: u64,
+	len: usize,
+	time: &DateTime<Local>,
+	authors: &str,
+) -> String {
+	use std::fmt::Write as _;
+	let b = &mut file_buf;
+	let build_time = time.format("%+");
+	writeln!(b, "# Document Control {{-}}\n").unwrap();
+	writeln!(b, "**Version:** {revision}\n").unwrap();
+	writeln!(
+		b,
+		"**Source File Hash [XXH3 64](https://xxhash.com/):** {hash:X}\n"
+	)
+	.unwrap();
+	writeln!(b, "**Source File Length:** {len}\n").unwrap();
+	writeln!(b, "**Build Timestamp:** {build_time}\n").unwrap();
+	writeln!(b, "# Authors {{-}}\n").unwrap();
+	for author in authors.split(",") {
+		writeln!(b, "* {}", author.trim()).unwrap();
 	}
 	b.write_char('\n').unwrap();
 	file_buf
