@@ -38,6 +38,7 @@
           pandoc
           texliveMedium
           xxHash
+          typst
         ];
 
         commonArgs = {

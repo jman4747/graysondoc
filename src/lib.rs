@@ -17,6 +17,9 @@ use nom::{
 use serde::Deserialize;
 use thiserror::Error;
 
+pub const TYPST_TEMPLATE: &str = include_str!("./template.typ");
+pub const TYPST_TEMPLATE_LEN: u64 = TYPST_TEMPLATE.len() as u64;
+
 #[derive(Error, Debug)]
 pub enum Error {
 	#[error("input: {0:?} isn't a file")]
@@ -35,10 +38,10 @@ pub enum Error {
 	PandocVersionCmd(#[source] std::io::Error),
 	#[error("pandoc executable not available:\n{0}")]
 	PandocVersionOutput(Box<str>),
-	#[error("pdflatex executable not available:\n{0:?}")]
-	LatexVersionCmd(#[source] std::io::Error),
-	#[error("pdflatex executable not available:\n{0:?}")]
-	LatexVersionOutput(Box<str>),
+	#[error("typst executable not available:\n{0:?}")]
+	TypstVersionCmd(#[source] std::io::Error),
+	#[error("typst executable not available:\n{0:?}")]
+	TypstVersionOutput(Box<str>),
 	#[error("can't read input markdown file:\n{0:?}")]
 	ReadInputMd(#[source] std::io::Error),
 	#[error("first line must be exactly \"# Objectives\" but was: {0:?}")]
@@ -63,6 +66,10 @@ pub enum Error {
 	PandocInvoke(std::io::Error),
 	#[error("pandoc executable not available:\n{0}")]
 	PandocOutput(Box<str>),
+	#[error("typst executable not available:\n{0:?}")]
+	TypstInvoke(std::io::Error),
+	#[error("typst executable not available:\n{0}")]
+	TypstOutput(Box<str>),
 }
 
 pub const METADATA_FILE_NAME: &str = "metadata.toml";
@@ -71,10 +78,15 @@ pub const METADATA_FILE_NAME: &str = "metadata.toml";
 pub const PANDOC_CMD: &str = "pandoc";
 #[cfg(target_os = "windows")]
 pub const PANDOC_CMD: &str = "pandoc.exe";
+// #[cfg(not(target_os = "windows"))]
+// pub const LATEX_CMD: &str = "lualatex";
+// #[cfg(target_os = "windows")]
+// pub const LATEX_CMD: &str = "lualatex.exe";
+
 #[cfg(not(target_os = "windows"))]
-pub const LATEX_CMD: &str = "lualatex";
+pub const TYPST_CMD: &str = "typst";
 #[cfg(target_os = "windows")]
-pub const LATEX_CMD: &str = "lualatex.exe";
+pub const TYPST_CMD: &str = "typst.exe";
 
 #[derive(FromArgs, PartialEq, Debug)]
 /// Graysondoc
@@ -91,10 +103,10 @@ pub struct GdocCli {
 	/// print version information
 	#[argh(switch)]
 	pub version: bool,
-	/// don't delete markdown itermediate representation
+	/// don't delete typst itermediate representation
 	#[argh(switch)]
 	pub preserve_ir: bool,
-	/// stop after building markdown itermediate representation, implies --preserve-ir
+	/// stop after building typst itermediate representation, implies --preserve-ir
 	#[argh(switch)]
 	pub ir_only: bool,
 	/// compile the document as a memo given comma separated author list
@@ -176,43 +188,41 @@ pub fn check_for_exes() -> Result<(), Error> {
 		return Err(Error::PandocVersionOutput(e_msg.into_boxed_str()));
 	}
 
-	let latex_version = Command::new(LATEX_CMD)
+	let typst_version = Command::new(TYPST_CMD)
 		.arg("--version")
 		.output()
-		.map_err(|ioe| Error::LatexVersionCmd(ioe))?;
+		.map_err(|ioe| Error::TypstVersionCmd(ioe))?;
 
-	if latex_version.status.success() {
-		const ERR_MSG: &str = "can't read stdout stream from pdflatex";
-		let version_msg: String = latex_version
+	if typst_version.status.success() {
+		const ERR_MSG: &str = "can't read stdout stream from typst";
+		let version_msg: String = typst_version
 			.stdout
 			.try_into()
-			.map_err(|_| Error::LatexVersionOutput(Box::from(ERR_MSG)))?;
+			.map_err(|_| Error::TypstVersionOutput(Box::from(ERR_MSG)))?;
 		let first_line = version_msg
 			.lines()
 			.next()
-			.ok_or_else(|| Error::LatexVersionOutput(Box::from(ERR_MSG)))?;
+			.ok_or_else(|| Error::TypstVersionOutput(Box::from(ERR_MSG)))?;
 		println!("With: {first_line}");
 	} else {
-		let e_msg: String = latex_version
+		let e_msg: String = typst_version
 			.stderr
 			.try_into()
-			.unwrap_or_else(|_| "unknown error getting pdflatex version".into());
-		return Err(Error::LatexVersionOutput(e_msg.into_boxed_str()));
+			.unwrap_or_else(|_| "unknown error getting typst version".into());
+		return Err(Error::TypstVersionOutput(e_msg.into_boxed_str()));
 	}
 	Ok(())
 }
 
-pub fn call_pandoc(
-	irmd_path: impl AsRef<OsStr>,
-	ouput_path: impl AsRef<OsStr>,
-) -> Result<(), Error> {
-	// pandoc $irmd -f markdown --number-sections --pdf-engine=lualatex -o $output.pdf
+/// Markdown to Typst
+pub fn call_pandoc(md_path: impl AsRef<OsStr>, ouput_path: impl AsRef<OsStr>) -> Result<(), Error> {
+	// pandoc $md -f markdown -t typst -o $output.typ
 	let pandoc_invoke = Command::new(PANDOC_CMD)
-		.arg(irmd_path)
+		.arg(md_path)
 		.arg("-f")
 		.arg("markdown")
-		.arg("--number-sections")
-		.arg("--pdf-engine=lualatex")
+		.arg("-t")
+		.arg("typst")
 		.arg("-o")
 		.arg(ouput_path)
 		.output()
@@ -244,6 +254,51 @@ pub fn call_pandoc(
 			.try_into()
 			.unwrap_or_else(|_| "unknown error calling pandoc".into());
 		return Err(Error::PandocOutput(e_msg.into_boxed_str()));
+	}
+	Ok(())
+}
+
+/// Typst IR to PDF
+pub fn call_typst(
+	irtyp_path: impl AsRef<OsStr>,
+	ouput_path: impl AsRef<OsStr>,
+) -> Result<(), Error> {
+	// typst compile $irtyp_path -f pdf
+	let typst_invoke = Command::new(TYPST_CMD)
+		.arg("compile")
+		.arg(irtyp_path)
+		.arg("-f")
+		.arg("pdf")
+		.arg(ouput_path)
+		.output()
+		.map_err(|ioe| Error::TypstInvoke(ioe))
+		.inspect_err(|e| eprintln!("{e}"))?;
+
+	if typst_invoke.status.success() {
+		const ERR_MSG: &str = "can't read stdout stream from typst";
+		let pandoc_out: String = typst_invoke
+			.stdout
+			.try_into()
+			.map_err(|_| Error::TypstOutput(Box::from(ERR_MSG)))?;
+		let pandoc_err: String = typst_invoke
+			.stderr
+			.try_into()
+			.map_err(|_| Error::TypstOutput(Box::from(ERR_MSG)))?;
+		if pandoc_err.len() > 0 || pandoc_out.len() > 0 {
+			println!("Typst Output:");
+		}
+		if pandoc_err.len() > 0 {
+			println!("{pandoc_err}");
+		}
+		if pandoc_out.len() > 0 {
+			println!("{pandoc_out}");
+		}
+	} else {
+		let e_msg: String = typst_invoke
+			.stderr
+			.try_into()
+			.unwrap_or_else(|_| "unknown error calling typst".into());
+		return Err(Error::TypstOutput(e_msg.into_boxed_str()));
 	}
 	Ok(())
 }
@@ -292,117 +347,125 @@ pub fn parse_toml(file_buf: &mut String, toml_path: &Path) -> Result<Metadata, E
 	res
 }
 
-pub fn compile_yaml_metadata(
+/// Prepend the metadata to intermediate typst file
+pub fn compile_typst_metadata(
 	mut file_buf: String,
 	metadata: &Metadata,
 	parsed_name: &ParsedMdName,
 	time: &DateTime<Local>,
+	version: usize,
+	hash: u64,
+	src_len: usize,
 ) -> String {
 	use std::fmt::Write as _;
 	let b = &mut file_buf;
+	const GD_VERSION: &str = env!("CARGO_PKG_VERSION");
+	writeln!(b, "{TYPST_TEMPLATE}").unwrap();
 
-	writeln!(b, "---").unwrap();
-	let code = parsed_name.code;
-	let number = parsed_name.number;
+	// #show: project.with(
+	// 	title: "Grayson Pandoc",
+	// 	authors: (
+	// 		"Josh T.",
+	// 		"Abcd E."
+	// 	),
+	// 	departments: (
+	// 		"IT",
+	// 		"Operations",
+	// 		"Outreach"
+	// 	),
+	// 	doc_type: "SDR",
+	// 	document_number: 0,
+	// 	date: "2025/11/20 UTC -0500",
+	// 	status: "DRAFT",
+	// 	version: 0,
+	// 	hash: "FFFF",
+	// 	src_length: 999,
+	// 	graysondoc_version: 0,
+	// )
 	let title = &parsed_name.title;
-	writeln!(b, "title: {code}-{number} {title}").unwrap();
-	writeln!(b, "author:").unwrap();
-	for department in &metadata.departments {
-		writeln!(b, "- {department}").unwrap()
-	}
-	let build_date = time.format("%Y/%m/%d UTC %z");
-	writeln!(b, "date: {build_date}").unwrap();
-	writeln!(b, "fontsize: 12pt").unwrap();
-	writeln!(b, "toc: true").unwrap();
-	writeln!(b, "mainfont: AtkinsonHyperlegibleNext").unwrap();
-	// writeln!(b, "fontfamily: AtkensonHyperlegibleNext").unwrap();
-	writeln!(b, "papersize: letter").unwrap();
-	// extra NL so we leave a blank line before the first section
-	writeln!(b, "---\n").unwrap();
-	file_buf
-}
-
-pub fn compile_memo_yaml_metadata(
-	mut file_buf: String,
-	name: &str,
-	time: &DateTime<Local>,
-) -> String {
-	use std::fmt::Write as _;
-	let b = &mut file_buf;
-
-	writeln!(b, "---").unwrap();
-	writeln!(b, "title: {name}").unwrap();
-	let build_date = time.format("%Y/%m/%d UTC %z");
-	writeln!(b, "date: {build_date}").unwrap();
-	writeln!(b, "fontsize: 12pt").unwrap();
-	writeln!(b, "toc: true").unwrap();
-	writeln!(b, "mainfont: AtkinsonHyperlegibleNext").unwrap();
-	// writeln!(b, "fontfamily: AtkensonHyperlegibleNext").unwrap();
-	writeln!(b, "papersize: letter").unwrap();
-	// extra NL so we leave a blank line before the first section
-	writeln!(b, "---\n").unwrap();
-	file_buf
-}
-
-pub fn compile_std_sections(
-	mut file_buf: String,
-	metadata: &Metadata,
-	parsed_name: &ParsedMdName,
-	revision: usize,
-	hash: u64,
-	len: usize,
-	time: &DateTime<Local>,
-) -> String {
-	use std::fmt::Write as _;
-	let b = &mut file_buf;
 	let code = parsed_name.code;
 	let number = parsed_name.number;
+	let build_date = time.format("%Y/%m/%d UTC %z");
 	let status = metadata.status;
-	let build_time = time.format("%+");
-	writeln!(b, "# Document Control {{-}}\n").unwrap();
-	writeln!(b, "**Document Type:** {code}\n").unwrap();
-	writeln!(b, "**Document #:** {number}\n").unwrap();
-	writeln!(b, "**Status:** {status}\n").unwrap();
-	writeln!(b, "**Version:** {revision}\n").unwrap();
-	writeln!(
-		b,
-		"**Source File Hash [XXH3 64](https://xxhash.com/):** {hash:X}\n"
-	)
-	.unwrap();
-	writeln!(b, "**Source File Length:** {len}\n").unwrap();
-	writeln!(b, "**Build Timestamp:** {build_time}\n").unwrap();
-	writeln!(b, "# Authors {{-}}\n").unwrap();
-	for author in &metadata.authors {
-		writeln!(b, "* {author}").unwrap();
+	writeln!(b, "#show: project.with(").unwrap();
+	writeln!(b, "\ttitle:\"{title}\",").unwrap();
+
+	writeln!(b, "\tauthors: (").unwrap();
+	let mut authors = metadata.authors.iter();
+	while let Some(author) = authors.next() {
+		writeln!(b, "\t\t\"{author}\",").unwrap();
 	}
-	b.write_char('\n').unwrap();
+	writeln!(b, "\t),").unwrap();
+
+	writeln!(b, "\tdepartments: (").unwrap();
+	let mut departments = metadata.departments.iter();
+	while let Some(dept) = departments.next() {
+		writeln!(b, "\t\t\"{dept}\",").unwrap();
+	}
+	writeln!(b, "\t),").unwrap();
+
+	writeln!(b, "\tdoc_type: \"{code}\",").unwrap();
+	writeln!(b, "\tdocument_number: {number},").unwrap();
+	writeln!(b, "\tdate: \"{build_date}\",").unwrap();
+	writeln!(b, "\tstatus: \"{status}\",").unwrap();
+	writeln!(b, "\tversion: {version},").unwrap();
+	writeln!(b, "\thash: \"{hash:X}\",").unwrap();
+	writeln!(b, "\tsrc_length: {src_len},").unwrap();
+	writeln!(b, "\tgraysondoc_version: \"{GD_VERSION}\",").unwrap();
+
+	// extra NL so we leave a blank line before the first section
+	writeln!(b, ")\n").unwrap();
 	file_buf
 }
 
-pub fn compile_memo_std_sections(
-	mut file_buf: String,
-	revision: usize,
-	hash: u64,
-	len: usize,
-	time: &DateTime<Local>,
-	authors: &str,
-) -> String {
-	use std::fmt::Write as _;
-	let b = &mut file_buf;
-	let build_time = time.format("%+");
-	writeln!(b, "# Document Control {{-}}\n").unwrap();
-	writeln!(b, "**Version:** {revision}\n").unwrap();
-	writeln!(
-		b,
-		"**Source File Hash [XXH3 64](https://xxhash.com/):** {hash:X}\n"
-	)
-	.unwrap();
-	writeln!(b, "**Source File Length:** {len}\n").unwrap();
-	writeln!(b, "**Build Timestamp:** {build_time}\n").unwrap();
-	writeln!(b, "# Authors {{-}}\n").unwrap();
-	for author in authors.split(",") {
-		writeln!(b, "* {}", author.trim()).unwrap();
-	}
-	b.write_char('\n').unwrap();
-	file_buf
-}
+// TODO: memos
+// pub fn compile_memo_yaml_metadata(
+// 	mut file_buf: String,
+// 	name: &str,
+// 	time: &DateTime<Local>,
+// ) -> String {
+// 	use std::fmt::Write as _;
+// 	let b = &mut file_buf;
+
+// 	writeln!(b, "---").unwrap();
+// 	writeln!(b, "title: {name}").unwrap();
+// 	let build_date = time.format("%Y/%m/%d UTC %z");
+// 	writeln!(b, "date: {build_date}").unwrap();
+// 	writeln!(b, "fontsize: 12pt").unwrap();
+// 	writeln!(b, "toc: true").unwrap();
+// 	writeln!(b, "mainfont: AtkinsonHyperlegibleNext").unwrap();
+// 	// writeln!(b, "fontfamily: AtkensonHyperlegibleNext").unwrap();
+// 	writeln!(b, "papersize: letter").unwrap();
+// 	// extra NL so we leave a blank line before the first section
+// 	writeln!(b, "---\n").unwrap();
+// 	file_buf
+// }
+
+// TODO: memos
+// pub fn compile_memo_std_sections(
+// 	mut file_buf: String,
+// 	revision: usize,
+// 	hash: u64,
+// 	len: usize,
+// 	time: &DateTime<Local>,
+// 	authors: &str,
+// ) -> String {
+// 	use std::fmt::Write as _;
+// 	let b = &mut file_buf;
+// 	let build_time = time.format("%+");
+// 	writeln!(b, "# Document Control {{-}}\n").unwrap();
+// 	writeln!(b, "**Version:** {revision}\n").unwrap();
+// 	writeln!(
+// 		b,
+// 		"**Source File Hash [XXH3 64](https://xxhash.com/):** {hash:X}\n"
+// 	)
+// 	.unwrap();
+// 	writeln!(b, "**Source File Length:** {len}\n").unwrap();
+// 	writeln!(b, "**Build Timestamp:** {build_time}\n").unwrap();
+// 	writeln!(b, "# Authors {{-}}\n").unwrap();
+// 	for author in authors.split(",") {
+// 		writeln!(b, "* {}", author.trim()).unwrap();
+// 	}
+// 	b.write_char('\n').unwrap();
+// 	file_buf
+// }
