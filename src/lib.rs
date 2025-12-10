@@ -19,6 +19,8 @@ use thiserror::Error;
 
 pub const TYPST_TEMPLATE: &str = include_str!("./template.typ");
 pub const TYPST_TEMPLATE_LEN: u64 = TYPST_TEMPLATE.len() as u64;
+pub const TYPST_MEMO_TEMPLATE: &str = include_str!("./memo_template.typ");
+pub const TYPST_MEMO_TEMPLATE_LEN: u64 = TYPST_MEMO_TEMPLATE.len() as u64;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -121,14 +123,11 @@ pub struct ParsedMdName<'name> {
 	pub title: Cow<'name, str>,
 }
 
-pub fn nom_document_name(input: &str) -> IResult<&str, ParsedMdName<'_>> {
-	let mut code_parser = separated_pair(alpha1, char('-'), usize);
-	let (rst, (code, number)) = code_parser.parse(input)?;
-	let (raw_title, _underscore) = char('_').parse(rst)?;
-
+pub fn title_underscore_to_space(raw_title: &str) -> Cow<'_, str> {
+	// remove underscores
 	let raw_trim_title = raw_title.trim().trim_matches(&['_', '＿']);
 
-	let title: Cow<'_, str> = if raw_trim_title.contains('_') {
+	if raw_trim_title.contains('_') {
 		let mut buf = String::with_capacity(raw_trim_title.len());
 		let mut chars = raw_trim_title.chars();
 		if let Some(ch) = chars.next() {
@@ -150,7 +149,17 @@ pub fn nom_document_name(input: &str) -> IResult<&str, ParsedMdName<'_>> {
 		Cow::Owned(buf)
 	} else {
 		Cow::Borrowed(raw_trim_title)
-	};
+	}
+}
+
+pub fn nom_document_name(input: &str) -> IResult<&str, ParsedMdName<'_>> {
+	// get the code (doc type) and number
+	let mut code_parser = separated_pair(alpha1, char('-'), usize);
+	let (rst, (code, number)) = code_parser.parse(input)?;
+	let (raw_title, _underscore) = char('_').parse(rst)?;
+
+	// remove underscores
+	let title: Cow<'_, str> = title_underscore_to_space(raw_title);
 
 	Ok((
 		input,
@@ -397,8 +406,8 @@ pub fn compile_typst_metadata(
 	}
 	writeln!(b, "\t),").unwrap();
 
-	writeln!(b, "\tdepartments: (").unwrap();
 	let mut departments = metadata.departments.iter();
+	writeln!(b, "\tdepartments: (").unwrap();
 	while let Some(dept) = departments.next() {
 		writeln!(b, "\t\t\"{dept}\",").unwrap();
 	}
@@ -418,35 +427,58 @@ pub fn compile_typst_metadata(
 	file_buf
 }
 
-// TODO: memos
-// pub fn compile_memo_yaml_metadata(
-// 	mut file_buf: String,
-// 	name: &str,
-// 	time: &DateTime<Local>,
-// ) -> String {
-// 	use std::fmt::Write as _;
-// 	let b = &mut file_buf;
+pub fn compile_memo_typst_metadata(
+	mut file_buf: String,
+	title: &str,
+	version: usize,
+	hash: u64,
+	src_len: usize,
+	authors: &str,
+	time: &DateTime<Local>,
+) -> String {
+	use std::fmt::Write as _;
+	let b = &mut file_buf;
+	const GD_VERSION: &str = env!("CARGO_PKG_VERSION");
+	writeln!(b, "{TYPST_MEMO_TEMPLATE}").unwrap();
 
-// 	writeln!(b, "---").unwrap();
-// 	writeln!(b, "title: {name}").unwrap();
-// 	let build_date = time.format("%Y/%m/%d UTC %z");
-// 	writeln!(b, "date: {build_date}").unwrap();
-// 	writeln!(b, "fontsize: 12pt").unwrap();
-// 	writeln!(b, "toc: true").unwrap();
-// 	writeln!(b, "mainfont: AtkinsonHyperlegibleNext").unwrap();
-// 	// writeln!(b, "fontfamily: AtkensonHyperlegibleNext").unwrap();
-// 	writeln!(b, "papersize: letter").unwrap();
-// 	// extra NL so we leave a blank line before the first section
-// 	writeln!(b, "---\n").unwrap();
-// 	file_buf
-// }
+	// #show: project.with(
+	// 	title: "Grayson Pandoc",
+	// 	authors: (
+	// 		"Josh T.",
+	// 		"Abcd E."
+	// 	),
+	// 	date: "2025/11/20 UTC -0500",
+	// 	version: 0,
+	// 	hash: "FFFF",
+	// 	src_length: 999,
+	// 	graysondoc_version: 0,
+	// )
+
+	let build_date = time.format("%Y/%m/%d UTC %z");
+	writeln!(b, "#show: project.with(").unwrap();
+	writeln!(b, "\ttitle:\"{title}\",").unwrap();
+
+	writeln!(b, "\tauthors: (").unwrap();
+	let mut authors = authors.split(",").map(|author| author.trim());
+	while let Some(author) = authors.next() {
+		writeln!(b, "\t\t\"{author}\",").unwrap();
+	}
+	writeln!(b, "\t),").unwrap();
+
+	writeln!(b, "\tdate: \"{build_date}\",").unwrap();
+	writeln!(b, "\tversion: {version},").unwrap();
+	writeln!(b, "\thash: \"{hash:X}\",").unwrap();
+	writeln!(b, "\tsrc_length: {src_len},").unwrap();
+	writeln!(b, "\tgraysondoc_version: \"{GD_VERSION}\",").unwrap();
+
+	// extra NL so we leave a blank line before the first section
+	writeln!(b, ")\n").unwrap();
+	file_buf
+}
 
 // TODO: memos
 // pub fn compile_memo_std_sections(
 // 	mut file_buf: String,
-// 	revision: usize,
-// 	hash: u64,
-// 	len: usize,
 // 	time: &DateTime<Local>,
 // 	authors: &str,
 // ) -> String {
